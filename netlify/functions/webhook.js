@@ -9,8 +9,6 @@ var supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// ---------- Telegram helpers ----------
-
 async function sendMessage(chatId, text, options) {
   options = options || {};
   var body = { chat_id: chatId, text: text, parse_mode: 'HTML' };
@@ -42,8 +40,6 @@ function buildQuestionKeyboard(question) {
   return { inline_keyboard: rows };
 }
 
-// ---------- Session helpers ----------
-
 async function getSession(chatId) {
   var res = await supabase.from('sessions').select('*').eq('chat_id', chatId).maybeSingle();
   if (res.data) return res.data;
@@ -65,8 +61,6 @@ async function isAdmin(chatId) {
   var res = await supabase.from('admins').select('chat_id').eq('chat_id', chatId).maybeSingle();
   return !!res.data;
 }
-
-// ---------- Student flow ----------
 
 async function startStudentFlow(chatId) {
   await setSession(chatId, 'awaiting_name', {});
@@ -111,16 +105,15 @@ async function finishTest(chatId, session) {
   }
 }
 
-// ---------- Admin flow ----------
-
 var ADD_QUESTION_INSTRUCTIONS =
-  'Саволни шу форматда юборинг (бир хабарда):\n\n' +
+  'Саволни шу форматда юборинг:\n\n' +
   'Савол матни бу ерга\n' +
   'A) Вариант 1\n' +
   'B) Вариант 2\n' +
   'C) Вариант 3\n' +
   'D) Вариант 4\n' +
-  'Тўғри: A';
+  'Тўғри: A\n\n' +
+  'Бир нечта саволни бирданига юборишингиз мумкин - ҳар бир савол орасида БЎШ ҚАТОР қолдиринг.';
 
 function parseQuestionBlock(text) {
   var rawLines = text.split('\n');
@@ -140,13 +133,23 @@ function parseQuestionBlock(text) {
   }
   if (answerLineIndex === -1) return null;
 
-  var questionText = lines[0];
-  var optionLines = lines.slice(1, answerLineIndex);
-  var options = [];
-  for (var k = 0; k < optionLines.length; k++) {
-    options.push(optionLines[k].replace(/^[A-F]\)\s*/i, '').trim());
+  var optionsReversed = [];
+  var idx = answerLineIndex - 1;
+  while (idx >= 0 && /^[A-F]\)/.test(lines[idx])) {
+    optionsReversed.push(lines[idx]);
+    idx--;
   }
-  if (options.length < 2) return null;
+  if (optionsReversed.length < 2) return null;
+  optionsReversed.reverse();
+
+  var optionStartIndex = answerLineIndex - optionsReversed.length;
+  if (optionStartIndex < 1) return null;
+  var questionText = lines.slice(0, optionStartIndex).join('\n');
+
+  var options = [];
+  for (var k = 0; k < optionsReversed.length; k++) {
+    options.push(optionsReversed[k].replace(/^[A-F]\)\s*/, '').trim());
+  }
 
   var answerParts = lines[answerLineIndex].split(':');
   var letter = (answerParts[1] || '').trim().toUpperCase();
@@ -155,6 +158,17 @@ function parseQuestionBlock(text) {
   if (correctIndex === -1 || correctIndex >= options.length) return null;
 
   return { question_text: questionText, options: options, correct_index: correctIndex };
+}
+
+function parseMultipleBlocks(text) {
+  var rawBlocks = text.split(/\n\s*\n/);
+  var results = [];
+  for (var i = 0; i < rawBlocks.length; i++) {
+    var block = rawBlocks[i].trim();
+    if (!block) continue;
+    results.push({ index: results.length + 1, parsed: parseQuestionBlock(block) });
+  }
+  return results;
 }
 
 async function handleAdminCommand(chatId, text) {
@@ -195,8 +209,6 @@ async function handleAdminCommand(chatId, text) {
 
   return false;
 }
-
-// ---------- Main message handling ----------
 
 async function handleMessage(msg) {
   var chatId = msg.chat.id;
@@ -266,14 +278,23 @@ async function handleMessage(msg) {
   }
 
   if (session.state === 'awaiting_question_block' && admin) {
-    var parsed = parseQuestionBlock(text);
-    if (!parsed) {
-      await sendMessage(chatId, 'Формат нотўғри. Қайта уриниб кўринг:\n\n' + ADD_QUESTION_INSTRUCTIONS);
-      return;
+    var results = parseMultipleBlocks(text);
+    var successCount = 0;
+    var failedIndexes = [];
+    for (var r = 0; r < results.length; r++) {
+      if (results[r].parsed) {
+        await supabase.from('questions').insert(results[r].parsed);
+        successCount++;
+      } else {
+        failedIndexes.push(results[r].index);
+      }
     }
-    await supabase.from('questions').insert(parsed);
     await setSession(chatId, 'idle', {});
-    await sendMessage(chatId, 'Савол қўшилди: "' + parsed.question_text + '"');
+    var summary = successCount + ' та савол қўшилди.';
+    if (failedIndexes.length > 0) {
+      summary += '\n' + failedIndexes.length + ' та саволда хатолик (раками: ' + failedIndexes.join(', ') + '). Уларни алоҳида қайта юборинг.';
+    }
+    await sendMessage(chatId, summary);
     return;
   }
 
@@ -313,8 +334,6 @@ async function handleCallback(cq) {
   var updated2 = await getSession(chatId);
   await sendQuestionAtIndex(chatId, updated2);
 }
-
-// ---------- Entry point ----------
 
 exports.handler = async function (event) {
   try {
