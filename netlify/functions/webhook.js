@@ -1,47 +1,53 @@
 const { createClient } = require('@supabase/supabase-js');
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_PASSPHRASE = process.env.ADMIN_PASSPHRASE;
-const TG_API = https://api.telegram.org/bot${BOT_TOKEN};
+var BOT_TOKEN = process.env.BOT_TOKEN;
+var ADMIN_PASSPHRASE = process.env.ADMIN_PASSPHRASE;
+var TG_API = 'https://api.telegram.org/bot' + BOT_TOKEN;
 
-const supabase = createClient(
+var supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
 
 // ---------- Telegram helpers ----------
 
-async function sendMessage(chatId, text, options = {}) {
-  await fetch(`${TG_API}/sendMessage`, {
+async function sendMessage(chatId, text, options) {
+  options = options || {};
+  var body = { chat_id: chatId, text: text, parse_mode: 'HTML' };
+  for (var key in options) { body[key] = options[key]; }
+  await fetch(TG_API + '/sendMessage', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML', ...options }),
+    body: JSON.stringify(body),
   });
 }
 
 async function answerCallback(callbackQueryId, text) {
-  await fetch(`${TG_API}/answerCallbackQuery`, {
+  await fetch(TG_API + '/answerCallbackQuery', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ callback_query_id: callbackQueryId, text, show_alert: false }),
+    body: JSON.stringify({ callback_query_id: callbackQueryId, text: text, show_alert: false }),
   });
 }
 
 function buildQuestionKeyboard(question) {
-  const letters = ['A', 'B', 'C', 'D', 'E', 'F'];
-  return {
-    inline_keyboard: question.options.map((opt, idx) => [
-      { text: ${letters[idx]}) ${opt}, callback_data: ans_${question.id}_${idx} },
-    ]),
-  };
+  var letters = ['A', 'B', 'C', 'D', 'E', 'F'];
+  var rows = [];
+  for (var i = 0; i < question.options.length; i++) {
+    rows.push([{
+      text: letters[i] + ') ' + question.options[i],
+      callback_data: 'ans_' + question.id + '_' + i,
+    }]);
+  }
+  return { inline_keyboard: rows };
 }
 
 // ---------- Session helpers ----------
 
 async function getSession(chatId) {
-  const { data } = await supabase.from('sessions').select('*').eq('chat_id', chatId).maybeSingle();
-  if (data) return data;
-  const fresh = { chat_id: chatId, state: 'idle', data: {} };
+  var res = await supabase.from('sessions').select('*').eq('chat_id', chatId).maybeSingle();
+  if (res.data) return res.data;
+  var fresh = { chat_id: chatId, state: 'idle', data: {} };
   await supabase.from('sessions').upsert(fresh);
   return fresh;
 }
@@ -49,15 +55,15 @@ async function getSession(chatId) {
 async function setSession(chatId, state, data) {
   await supabase.from('sessions').upsert({
     chat_id: chatId,
-    state,
-    data,
+    state: state,
+    data: data,
     updated_at: new Date().toISOString(),
   });
 }
 
 async function isAdmin(chatId) {
-  const { data } = await supabase.from('admins').select('chat_id').eq('chat_id', chatId).maybeSingle();
-  return !!data;
+  var res = await supabase.from('admins').select('chat_id').eq('chat_id', chatId).maybeSingle();
+  return !!res.data;
 }
 
 // ---------- Student flow ----------
@@ -68,44 +74,46 @@ async function startStudentFlow(chatId) {
 }
 
 async function sendQuestionAtIndex(chatId, session) {
-  const { question_ids, current } = session.data;
-  if (current >= question_ids.length) {
+  var questionIds = session.data.question_ids;
+  var current = session.data.current;
+  if (current >= questionIds.length) {
     return finishTest(chatId, session);
   }
-  const qid = question_ids[current];
-  const { data: question } = await supabase.from('questions').select('*').eq('id', qid).single();
-  await sendMessage(
-    chatId,
-    Савол ${current + 1}/${question_ids.length}:\n\n${question.question_text},
-    { reply_markup: buildQuestionKeyboard(question) }
-  );
+  var qid = questionIds[current];
+  var res = await supabase.from('questions').select('*').eq('id', qid).single();
+  var question = res.data;
+  var header = 'Савол ' + (current + 1) + '/' + questionIds.length + ':\n\n' + question.question_text;
+  await sendMessage(chatId, header, { reply_markup: buildQuestionKeyboard(question) });
 }
 
 async function finishTest(chatId, session) {
-  const { full_name, phone, score, question_ids } = session.data;
-  const total = question_ids.length;
+  var fullName = session.data.full_name;
+  var phone = session.data.phone;
+  var score = session.data.score;
+  var total = session.data.question_ids.length;
 
   await supabase.from('attempts').insert({
     chat_id: chatId,
-    full_name,
-    phone,
-    score,
-    total,
+    full_name: fullName,
+    phone: phone,
+    score: score,
+    total: total,
   });
 
-  await sendMessage(chatId, `Тест якунланди!\n\nНатижа: <b>${score}/${total}</b>`);
+  await sendMessage(chatId, 'Тест якунланди!\n\nНатижа: <b>' + score + '/' + total + '</b>');
   await setSession(chatId, 'idle', {});
 
-  const { data: admins } = await supabase.from('admins').select('chat_id');
-  const notice = Янги натижа:\n${full_name}\nТел: ${phone}\nБалл: ${score}/${total};
-  for (const admin of admins || []) {
-    await sendMessage(admin.chat_id, notice);
+  var adminsRes = await supabase.from('admins').select('chat_id');
+  var admins = adminsRes.data || [];
+  var notice = 'Янги натижа:\n' + fullName + '\nТел: ' + phone + '\nБалл: ' + score + '/' + total;
+  for (var i = 0; i < admins.length; i++) {
+    await sendMessage(admins[i].chat_id, notice);
   }
 }
 
 // ---------- Admin flow ----------
 
-const ADD_QUESTION_INSTRUCTIONS =
+var ADD_QUESTION_INSTRUCTIONS =
   'Саволни шу форматда юборинг (бир хабарда):\n\n' +
   'Савол матни бу ерга\n' +
   'A) Вариант 1\n' +
@@ -115,25 +123,41 @@ const ADD_QUESTION_INSTRUCTIONS =
   'Тўғри: A';
 
 function parseQuestionBlock(text) {
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  var rawLines = text.split('\n');
+  var lines = [];
+  for (var i = 0; i < rawLines.length; i++) {
+    var t = rawLines[i].trim();
+    if (t) lines.push(t);
+  }
   if (lines.length < 3) return null;
 
-  const answerLine = lines.find((l) => /^тўғри:|^togri:|^javob:|^правильный:/i.test(l));
-  if (!answerLine) return null;
+  var answerLineIndex = -1;
+  for (var j = 0; j < lines.length; j++) {
+    if (/^тўғри:|^togri:|^javob:|^правильный:/i.test(lines[j])) {
+      answerLineIndex = j;
+      break;
+    }
+  }
+  if (answerLineIndex === -1) return null;
 
-  const questionText = lines[0];
-  const optionLines = lines.slice(1, lines.indexOf(answerLine));
-  const options = optionLines.map((l) => l.replace(/^[A-F]\)\s*/i, '').trim());
+  var questionText = lines[0];
+  var optionLines = lines.slice(1, answerLineIndex);
+  var options = [];
+  for (var k = 0; k < optionLines.length; k++) {
+    options.push(optionLines[k].replace(/^[A-F]\)\s*/i, '').trim());
+  }
   if (options.length < 2) return null;
 
-  const letter = answerLine.split(':')[1]?.trim().toUpperCase();
-  const correctIndex = ['A', 'B', 'C', 'D', 'E', 'F'].indexOf(letter);
+  var answerParts = lines[answerLineIndex].split(':');
+  var letter = (answerParts[1] || '').trim().toUpperCase();
+  var letters = ['A', 'B', 'C', 'D', 'E', 'F'];
+  var correctIndex = letters.indexOf(letter);
   if (correctIndex === -1 || correctIndex >= options.length) return null;
 
-  return { question_text: questionText, options, correct_index: correctIndex };
+  return { question_text: questionText, options: options, correct_index: correctIndex };
 }
 
-async function handleAdminCommand(chatId, text, username) {
+async function handleAdminCommand(chatId, text) {
   if (text === '/addquestion') {
     await setSession(chatId, 'awaiting_question_block', {});
     await sendMessage(chatId, ADD_QUESTION_INSTRUCTIONS);
@@ -141,25 +165,30 @@ async function handleAdminCommand(chatId, text, username) {
   }
 
   if (text === '/questions') {
-    const { data: qs } = await supabase
+    var qsRes = await supabase
       .from('questions')
       .select('id, question_text')
       .eq('active', true)
       .order('id');
+    var qs = qsRes.data;
     if (!qs || qs.length === 0) {
       await sendMessage(chatId, 'Ҳозирча саволлар йўқ.');
     } else {
-      const list = qs.map((q) => `#${q.id} — ${q.question_text}`).join('\n');
-      await sendMessage(chatId, `${list}\n\nЎчириш учун: /delquestion <id>`);
+      var lines = [];
+      for (var i = 0; i < qs.length; i++) {
+        lines.push('#' + qs[i].id + ' - ' + qs[i].question_text);
+      }
+      await sendMessage(chatId, lines.join('\n') + '\n\nЎчириш учун: /delquestion <id>');
     }
     return true;
   }
 
-  if (text.startsWith('/delquestion')) {
-    const id = parseInt(text.split(' ')[1], 10);
+  if (text.indexOf('/delquestion') === 0) {
+    var parts = text.split(' ');
+    var id = parseInt(parts[1], 10);
     if (id) {
       await supabase.from('questions').update({ active: false }).eq('id', id);
-      await sendMessage(chatId, `#${id} ўчирилди.`);
+      await sendMessage(chatId, '#' + id + ' ўчирилди.');
     }
     return true;
   }
@@ -170,15 +199,15 @@ async function handleAdminCommand(chatId, text, username) {
 // ---------- Main message handling ----------
 
 async function handleMessage(msg) {
-  const chatId = msg.chat.id;
-  const text = (msg.text || '').trim();
-  const username = msg.from.username || '';
-  const admin = await isAdmin(chatId);
+  var chatId = msg.chat.id;
+  var text = (msg.text || '').trim();
+  var username = msg.from.username || '';
+  var admin = await isAdmin(chatId);
 
-  if (text.startsWith('/admin')) {
-    const passphrase = text.split(' ').slice(1).join(' ');
+  if (text.indexOf('/admin') === 0) {
+    var passphrase = text.split(' ').slice(1).join(' ');
     if (passphrase && passphrase === ADMIN_PASSPHRASE) {
-      await supabase.from('admins').upsert({ chat_id: chatId, username });
+      await supabase.from('admins').upsert({ chat_id: chatId, username: username });
       await sendMessage(chatId, 'Сиз энди админсиз. /addquestion, /questions буйруқлари мавжуд.');
     } else {
       await sendMessage(chatId, 'Парол нотўғри. Формат: /admin <парол>');
@@ -187,11 +216,11 @@ async function handleMessage(msg) {
   }
 
   if (admin) {
-    const handled = await handleAdminCommand(chatId, text, username);
+    var handled = await handleAdminCommand(chatId, text);
     if (handled) return;
   }
 
-  const session = await getSession(chatId);
+  var session = await getSession(chatId);
 
   if (text === '/start') {
     await startStudentFlow(chatId);
@@ -199,18 +228,20 @@ async function handleMessage(msg) {
   }
 
   if (session.state === 'awaiting_name') {
-    const data = { ...session.data, full_name: text };
-    await setSession(chatId, 'awaiting_phone', data);
+    var data1 = session.data;
+    data1.full_name = text;
+    await setSession(chatId, 'awaiting_phone', data1);
     await sendMessage(chatId, 'Телефон рақамингизни киритинг:');
     return;
   }
 
   if (session.state === 'awaiting_phone') {
-    const { data: activeQuestions } = await supabase
+    var activeRes = await supabase
       .from('questions')
       .select('id')
       .eq('active', true)
       .order('id');
+    var activeQuestions = activeRes.data;
 
     if (!activeQuestions || activeQuestions.length === 0) {
       await sendMessage(chatId, 'Ҳозирча тест саволлари қўшилмаган. Кейинроқ уриниб кўринг.');
@@ -218,28 +249,31 @@ async function handleMessage(msg) {
       return;
     }
 
-    const data = {
-      ...session.data,
-      phone: text,
-      question_ids: activeQuestions.map((q) => q.id),
-      current: 0,
-      score: 0,
-    };
-    await setSession(chatId, 'in_test', data);
-    const updated = await getSession(chatId);
-    await sendQuestionAtIndex(chatId, updated);
+    var ids = [];
+    for (var i = 0; i < activeQuestions.length; i++) {
+      ids.push(activeQuestions[i].id);
+    }
+
+    var data2 = session.data;
+    data2.phone = text;
+    data2.question_ids = ids;
+    data2.current = 0;
+    data2.score = 0;
+    await setSession(chatId, 'in_test', data2);
+    var updated1 = await getSession(chatId);
+    await sendQuestionAtIndex(chatId, updated1);
     return;
   }
 
   if (session.state === 'awaiting_question_block' && admin) {
-    const parsed = parseQuestionBlock(text);
+    var parsed = parseQuestionBlock(text);
     if (!parsed) {
       await sendMessage(chatId, 'Формат нотўғри. Қайта уриниб кўринг:\n\n' + ADD_QUESTION_INSTRUCTIONS);
       return;
     }
     await supabase.from('questions').insert(parsed);
     await setSession(chatId, 'idle', {});
-    await sendMessage(chatId, `Савол қўшилди: "${parsed.question_text}"`);
+    await sendMessage(chatId, 'Савол қўшилди: "' + parsed.question_text + '"');
     return;
   }
 
@@ -249,156 +283,49 @@ async function handleMessage(msg) {
 }
 
 async function handleCallback(cq) {
-  const chatId = cq.message.chat.id;
-  const [, qidStr, idxStr] = cq.data.split('_');
-  const qid = parseInt(qidStr, 10);
-  const chosenIndex = parseInt(idxStr, 10);
+  var chatId = cq.message.chat.id;
+  var parts = cq.data.split('_');
+  var qid = parseInt(parts[1], 10);
+  var chosenIndex = parseInt(parts[2], 10);
 
-  const session = await getSession(chatId);
+  var session = await getSession(chatId);
   if (session.state !== 'in_test') {
     await answerCallback(cq.id, '');
     return;
   }
 
-  const { question_ids, current } = session.data;
-  if (question_ids[current] !== qid) {
+  var questionIds = session.data.question_ids;
+  var current = session.data.current;
+  if (questionIds[current] !== qid) {
     await answerCallback(cq.id, 'Бу савол аллақачон ўтилган.');
     return;
   }
-  if (correctIndex === -1 || correctIndex >= options.length) return null;
 
-  return { question_text: questionText, options, correct_index: correctIndex };
+  var qRes = await supabase.from('questions').select('*').eq('id', qid).single();
+  var question = qRes.data;
+  var correct = chosenIndex === question.correct_index;
+  await answerCallback(cq.id, correct ? 'Тўғри!' : 'Нотўғри');
+
+  var newData = session.data;
+  newData.current = current + 1;
+  newData.score = session.data.score + (correct ? 1 : 0);
+  await setSession(chatId, 'in_test', newData);
+  var updated2 = await getSession(chatId);
+  await sendQuestionAtIndex(chatId, updated2);
 }
 
-async function handleAdminCommand(chatId, text, username) {
-  if (text === '/addquestion') {
-    await setSession(chatId, 'awaiting_question_block', {});
-    await sendMessage(chatId, ADD_QUESTION_INSTRUCTIONS);
-    return true;
-  }
+// ---------- Entry point ----------
 
-  if (text === '/questions') {
-    const { data: qs } = await supabase
-      .from('questions')
-      .select('id, question_text')
-      .eq('active', true)
-      .order('id');
-    if (!qs || qs.length === 0) {
-      await sendMessage(chatId, 'Ҳозирча саволлар йўқ.');
-    } else {
-      const list = qs.map((q) => `#${q.id} — ${q.question_text}`).join('\n');
-      await sendMessage(chatId, `${list}\n\nЎчириш учун: /delquestion <id>`);
+exports.handler = async function (event) {
+  try {
+    var update = JSON.parse(event.body || '{}');
+    if (update.callback_query) {
+      await handleCallback(update.callback_query);
+    } else if (update.message) {
+      await handleMessage(update.message);
     }
-    return true;
+  } catch (err) {
+    console.error(err);
   }
-
-  if (text.startsWith('/delquestion')) {
-    const id = parseInt(text.split(' ')[1], 10);
-    if (id) {
-      await supabase.from('questions').update({ active: false }).eq('id', id);
-      await sendMessage(chatId, `#${id} ўчирилди.`);
-    }
-    return true;
-  }
-
-  return false;
-}
-
-// ---------- Main message handling ----------
-
-async function handleMessage(msg) {
-  const chatId = msg.chat.id;
-  const text = (msg.text || '').trim();
-  const username = msg.from.username || '';
-  const admin = await isAdmin(chatId);
-
-  if (text.startsWith('/admin')) {
-    const passphrase = text.split(' ').slice(1).join(' ');
-    if (passphrase && passphrase === ADMIN_PASSPHRASE) {
-      await supabase.from('admins').upsert({ chat_id: chatId, username });
-      await sendMessage(chatId, 'Сиз энди админсиз. /addquestion, /questions буйруқлари мавжуд.');
-    } else {
-      await sendMessage(chatId, 'Парол нотўғри. Формат: /admin <парол>');
-    }
-    return;
-  }
-
-  if (admin) {
-    const handled = await handleAdminCommand(chatId, text, username);
-    if (handled) return;
-  }
-
-  const session = await getSession(chatId);
-
-  if (text === '/start') {
-    await startStudentFlow(chatId);
-    return;
-  }
-
-  if (session.state === 'awaiting_name') {
-    const data = { ...session.data, full_name: text };
-    await setSession(chatId, 'awaiting_phone', data);
-    await sendMessage(chatId, 'Телефон рақамингизни киритинг:');
-    return;
-  }
-
-  if (session.state === 'awaiting_phone') {
-    const { data: activeQuestions } = await supabase
-      .from('questions')
-      .select('id')
-      .eq('active', true)
-      .order('id');
-
-    if (!activeQuestions || activeQuestions.length === 0) {
-      await sendMessage(chatId, 'Ҳозирча тест саволлари қўшилмаган. Кейинроқ уриниб кўринг.');
-      await setSession(chatId, 'idle', {});
-      return;
-    }
-
-    const data = {
-      ...session.data,
-      phone: text,
-      question_ids: activeQuestions.map((q) => q.id),
-      current: 0,
-      score: 0,
-    };
-    await setSession(chatId, 'in_test', data);
-    const updated = await getSession(chatId);
-    await sendQuestionAtIndex(chatId, updated);
-    return;
-  }
-
-  if (session.state === 'awaiting_question_block' && admin) {
-    const parsed = parseQuestionBlock(text);
-    if (!parsed) {
-      await sendMessage(chatId, 'Формат нотўғри. Қайта уриниб кўринг:\n\n' + ADD_QUESTION_INSTRUCTIONS);
-      return;
-    }
-    await supabase.from('questions').insert(parsed);
-    await setSession(chatId, 'idle', {});
-    await sendMessage(chatId, `Савол қўшилди: "${parsed.question_text}"`);
-    return;
-  }
-
-  if (session.state === 'idle') {
-    await sendMessage(chatId, 'Тестни бошлаш учун /start буйруғини юборинг.');
-  }
-}
-
-async function handleCallback(cq) {
-  const chatId = cq.message.chat.id;
-  const [, qidStr, idxStr] = cq.data.split('_');
-  const qid = parseInt(qidStr, 10);
-  const chosenIndex = parseInt(idxStr, 10);
-
-  const session = await getSession(chatId);
-  if (session.state !== 'in_test') {
-    await answerCallback(cq.id, '');
-    return;
-  }
-
-  const { question_ids, current } = session.data;
-  if (question_ids[current] !== qid) {
-    await answerCallback(cq.id, 'Бу савол аллақачон ўтилган.');
-    return;
-  }
+  return { statusCode: 200, body: 'ok' };
+};
