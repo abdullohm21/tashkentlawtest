@@ -213,6 +213,15 @@ async function handleAdminCommand(chatId, text) {
 async function handleMessage(msg) {
   var chatId = msg.chat.id;
   var text = (msg.text || '').trim();
+  if (text.charAt(0) === '/') {
+    var spaceIdx = text.indexOf(' ');
+    var cmdPart = spaceIdx === -1 ? text : text.substring(0, spaceIdx);
+    var atIdx = cmdPart.indexOf('@');
+    if (atIdx !== -1) {
+      var cleanCmd = cmdPart.substring(0, atIdx);
+      text = spaceIdx === -1 ? cleanCmd : cleanCmd + text.substring(spaceIdx);
+    }
+  }
   var username = msg.from.username || '';
   var admin = await isAdmin(chatId);
 
